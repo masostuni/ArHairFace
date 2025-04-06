@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FantechWineAr - Modelli Multipli, Logo e Swipe</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { display: block; }
+    #videoElement { display: none; }
+    /* Posiziona il logo in alto al centro */
+    #logo {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      width: 150px; /* Regola la dimensione in base alle tue esigenze */
+    }
+  </style>
+</head>
+<body>
+  <!-- Logo in alto -->
+  <img id="logo" src="logo.png" alt="Logo">
+  <video id="videoElement" autoplay playsinline></video>
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.136.0/build/three.module.js';
+    import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.136.0/examples/jsm/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.136.0/examples/jsm/controls/OrbitControls.js';
+    import { FaceMesh } from 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js';
+    import { Camera as MpCamera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
+
+    let scene, camera, renderer, currentModel, videoElement, videoTexture;
+    let faceMeshInstance;
+    const loader = new GLTFLoader();
+
+    // Array dei modelli disponibili (2 maschili e 2 femminili)
+    const models = [
+      "model_male1.glb",
+      "model_male2.glb",
+      "model_female1.glb",
+      "model_female2.glb"
+    ];
+    let currentModelIndex = 0; // modello iniziale
+
+    // Variabili per il rilevamento dello swipe
+    let touchStartX = 0;
+    let touchEndX = 0;
+    const swipeThreshold = 50; // minimo spostamento (in pixel) per considerare uno swipe
+
+    async function init() {
+      // Creazione della scena Three.js
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 1.5, 3);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.target.set(0, 1.5, 0);
+      controls.update();
+
+      // Illuminazione ambientale e direzionale
+      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      directionalLight.position.set(5, 10, 7.5);
+      scene.add(directionalLight);
+
+      // Inizializza la webcam
+      videoElement = document.getElementById('videoElement');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        videoElement.srcObject = stream;
+      } catch (error) {
+        console.error("Errore nell'accesso alla webcam:", error);
+      }
+
+      // Texture video per aggiornamenti dinamici
+      videoTexture = new THREE.VideoTexture(videoElement);
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
+      videoTexture.format = THREE.RGBFormat;
+
+      // Inizializza MediaPipe FaceMesh
+      initFaceMesh();
+
+      // Carica il modello iniziale
+      loadModel(models[currentModelIndex]);
+
+      // Gestione dello swipe sul renderer (o su document.body)
+      renderer.domElement.addEventListener('touchstart', handleTouchStart, false);
+      renderer.domElement.addEventListener('touchend', handleTouchEnd, false);
+
+      window.addEventListener('resize', onWindowResize, false);
+      animate();
+    }
+
+    // Funzione per caricare il modello 3D tramite GLTFLoader
+    async function loadModel(modelPath) {
+      if (currentModel) {
+        scene.remove(currentModel);
+        currentModel.traverse(child => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) {
+            if (Array.isArray(child.material)) {
+              child.material.forEach(mat => mat.dispose());
+            } else {
+              child.material.dispose();
+            }
+          }
+        });
+      }
+      return new Promise((resolve, reject) => {
+        loader.load(
+          modelPath,
+          (gltf) => {
+            currentModel = gltf.scene;
+            scene.add(currentModel);
+            resolve();
+          },
+          undefined,
+          (error) => {
+            console.error('Errore nel caricamento del modello:', error);
+            reject(error);
+          }
+        );
+      });
+    }
+
+    // Inizializzazione di MediaPipe FaceMesh
+    function initFaceMesh() {
+      faceMeshInstance = new FaceMesh({
+        locateFile: (file) => https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}
+      });
+
+      faceMeshInstance.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+
+      faceMeshInstance.onResults(onResults);
+
+      const mpCamera = new MpCamera(videoElement, {
+        onFrame: async () => {
+          await faceMeshInstance.send({ image: videoElement });
+        },
+        width: 640,
+        height: 480
+      });
+      mpCamera.start();
+    }
+
+    // Gestione dei risultati di FaceMesh: mappatura dei landmarks, apertura bocca e rotazione del modello
+    function onResults(results) {
+      if (results.multiFaceLandmarks && currentModel) {
+        const landmarks = results.multiFaceLandmarks[0];
+
+        // Aggiorna l'apertura della bocca (esempio)
+        const mouthOpen = computeMouthOpen(landmarks);
+        if (currentModel.morphTargetDictionary && currentModel.morphTargetInfluences) {
+          const mouthOpenIndex = currentModel.morphTargetDictionary['mouthOpen'];
+          if (mouthOpenIndex !== undefined) {
+            currentModel.morphTargetInfluences[mouthOpenIndex] = mouthOpen;
+          }
+        }
+
+        // Aggiorna la texture video se il modello ha una mesh dedicata
+        currentModel.traverse((child) => {
+          if (child.isMesh && child.name === 'FaceMesh') {
+            child.material.map = videoTexture;
+            child.material.needsUpdate = true;
+          }
+        });
+
+        // Calcola e applica la rotazione del modello in base al movimento del volto
+        updateModelRotation(landmarks);
+      }
+    }
+
+    // Calcola l'apertura della bocca utilizzando i landmark 13 e 14
+    function computeMouthOpen(landmarks) {
+      const upperLip = landmarks[13];
+      const lowerLip = landmarks[14];
+      const dx = upperLip.x - lowerLip.x;
+      const dy = upperLip.y - lowerLip.y;
+      const dz = upperLip.z - lowerLip.z;
+      const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      return THREE.MathUtils.clamp(distance * 30, 0, 1);
+    }
+
+    // Calcola la rotazione del modello in base alla posizione degli occhi
+    function updateModelRotation(landmarks) {
+      // Landmark 33: occhio sinistro esterno, 263: occhio destro esterno
+      const leftEye = landmarks[33];
+      const rightEye = landmarks[263];
+      const dx = rightEye.x - leftEye.x;
+      const dy = rightEye.y - leftEye.y;
+      const angle = Math.atan2(dy, dx);
+      // Applica una rotazione speculare sul asse Y
+      currentModel.rotation.y = -angle;
+    }
+
+    // Gestione del resize della finestra
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // Loop di animazione
+    function animate() {
+      requestAnimationFrame(animate);
+      renderer.render(scene, camera);
+    }
+
+    // Gestione degli eventi touch per rilevare lo swipe
+    function handleTouchStart(e) {
+      touchStartX = e.changedTouches[0].screenX;
+    }
+
+    function handleTouchEnd(e) {
+      touchEndX = e.changedTouches[0].screenX;
+      handleSwipe();
+    }
+
+    function handleSwipe() {
+      const diffX = touchEndX - touchStartX;
+      if (Math.abs(diffX) > swipeThreshold) {
+        if (diffX > 0) {
+          // Swipe verso destra: modello precedente
+          currentModelIndex = (currentModelIndex - 1 + models.length) % models.length;
+        } else {
+          // Swipe verso sinistra: modello successivo
+          currentModelIndex = (currentModelIndex + 1) % models.length;
+        }
+        loadModel(models[currentModelIndex]);
+      }
+    }
+
+    window.addEventListener('load', init);
+  </script>
+</body>
+</html>
